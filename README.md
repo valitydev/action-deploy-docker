@@ -25,5 +25,5 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
       steps:
-        uses: alfaind/action-docker-deploy@v1.0.0
+        uses: valitydev/action-docker-deploy@v1.0.0
 ```

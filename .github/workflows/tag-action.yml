@@ -15,7 +15,7 @@ jobs:
       - name: Checkout GitHub Action Repo
         uses: actions/checkout@v2
         with:
-          repository: alfaind/action-tagger
+          repository: valitydev/action-tagger
           ref: v1
           path: .github/actions/action-tagger
 
