@@ -7,19 +7,11 @@ on:
       - main
 
 jobs:
-  build:
+  tag-action:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
-
-      - name: Checkout GitHub Action Repo
-        uses: actions/checkout@v2
-        with:
-          repository: valitydev/action-tagger
-          ref: v1
-          path: .github/actions/action-tagger
-
-      - uses: ./.github/actions/action-tagger
+      - uses: valitydev/action-tagger@v2
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           with-v: true
