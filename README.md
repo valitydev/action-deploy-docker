@@ -4,15 +4,17 @@ This action deploy docker image
 
 ## Input
 
-| Name                 | Description                                                                                    |
-| ------------------   | ---------------------------------------------------------------------------------------------- |
-| `registry-username`  | Username for image registry                                                                    |
-| `registry-password`  | Password for image registry                                                                    |
-| `docker-registry`    | Docker image registry                                                                          |
-| `aws-ecr-access-key` | Amazon ECR access key                                                                          |
-| `aws-ecr-secret-key` | Amazon ECR secret key                                                                          |
-| `aws-region`         | AWS region                                                                                     |
-| `dokerfile-path`     | Path to dockerfile directory                                                                   |
+| Name                 | Description                        |
+| -------------------- | ---------------------------------- |
+| `registry-username`  | Username for image registry        |
+| `registry-password`  | Password for image registry        |
+| `docker-registry`    | Docker image registry              |
+| `aws-ecr-access-key` | Amazon ECR access key              |
+| `aws-ecr-secret-key` | Amazon ECR secret key              |
+| `aws-region`         | AWS region                         |
+| `context-path`       | Build's context path               |
+| `dokerfile-path`     | Path to Dockerfile                 |
+| `platforms`          | List of target platforms for build |
 
 ## Example Workflow File
 
@@ -25,5 +27,5 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
       steps:
-        uses: valitydev/action-docker-deploy@v1.0.0
+        uses: valitydev/action-deploy-docker@v2
 ```
