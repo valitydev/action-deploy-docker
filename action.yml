@@ -46,8 +46,8 @@ runs:
       with:
         images: ${{ inputs.docker-registry }}/${{ github.repository }}
         tags: |
-          type=sha,enable=${{ !contains(github.ref_name, 'epic') }}
-          type=raw,value=sha-{{ sha }}-{{ branch }},enable=${{ contains(github.ref_name, 'epic') }}
+          type=sha,enable=${{ !startsWith(github.ref_name, 'epic') }}
+          type=raw,value=sha-{{ sha }}-{{ branch }},enable=${{ startsWith(github.ref_name, 'epic') }}
 
     - name: 🚀 Build and push Docker image
       uses: docker/build-push-action@v2
