@@ -19,21 +19,71 @@ inputs:
     description: "Path to the Dockerfile"
     required: false
     default: "./Dockerfile"
+  push:
+    # Default depends on event context, see _Configure_ step.
+    description: "Push build image to the specified image registry?"
+    required: false
   platforms:
+    # Default depends on event context, see _Configure_ step.
     description: "List of target platforms for build"
     required: false
-    default: "linux/amd64,linux/arm64"
+  use-env-buildargs:
+    description: "Source docker build args from .env file?"
+    required: false
+    default: "true"
 
 runs:
   using: composite
   steps:
+    - name: 🖨 Checkout code
+      uses: actions/checkout@v3
+
+    - name: 🎲 Configure action
+      id: config
+      shell: bash
+      run: >
+        if [[ -n "${{ inputs.push }}" ]] ; then {
+          echo "::set-output name=push::${{ inputs.push }}"
+        } else {
+          if [[ "${{ github.event_name }}" == "push" ]] ; then {
+            echo "[INFO] (push = 'true') This is a push event, assuming image needs publishing."
+            echo "::set-output name=push::true"
+          } else {
+            echo "[INFO] (push = 'false') This is PR event, image probably needs just to be built."
+            echo "::set-output name=push::false"
+          } fi
+        } fi
+
+        if [[ -n "${{ inputs.platforms }}" ]] ; then {
+          echo "::set-output name=platforms::${{ inputs.platforms }}"
+        } else {
+          if [[ "${{ github.event_name }}" == "push" ]] ; then {
+            echo "[INFO] (platforms = 'linux/amd64,linux/arm64') This is a push event, assuming multiplatform image."
+            echo "::set-output name=platforms::linux/amd64,linux/arm64"
+          } else {
+            echo "[INFO] (platforms = 'linux/amd64') This is a PR event, just build an image under native platform."
+            echo "::set-output name=platforms::linux/amd64"
+          } fi
+        } fi
+
+    - name: 💉 Set up buildargs
+      if: ${{ inputs.use-env-buildargs == 'true' }}
+      id: buildargs
+      shell: bash
+      run: >
+        echo 'BUILDARGS<<EOF' >> $GITHUB_ENV ;
+        grep -v '^#' .env >> $GITHUB_ENV ;
+        echo 'EOF' >> $GITHUB_ENV
+
     - name: 🏗 Set up QEMU
+      if: ${{ steps.config.outputs.platforms != 'linux/amd64' }}
       uses: docker/setup-qemu-action@v1
 
     - name: 🏗 Set up Docker Buildx
       uses: docker/setup-buildx-action@v1
 
     - name: 🔓 Log in to the Container registry
+      if: ${{ steps.config.outputs.push == 'true' }}
       uses: docker/login-action@v1
       with:
         registry: ${{ inputs.docker-registry }}
@@ -54,7 +104,9 @@ runs:
       with:
         context: ${{ inputs.context-path }}
         file: ${{ inputs.dockerfile-path }}
-        platforms: ${{ inputs.platforms }}
-        push: true
+        platforms: ${{ steps.config.outputs.platforms }}
+        push: ${{ steps.config.outputs.push == 'true' }}
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
+        build-args: |
+          ${{ env.BUILDARGS }}
