@@ -70,10 +70,15 @@ runs:
       if: ${{ inputs.use-env-buildargs == 'true' }}
       id: buildargs
       shell: bash
+      # https://github.com/actions/toolkit/blob/dd04665/docs/commands.md#set-an-environment-variable
       run: >
-        echo 'BUILDARGS<<EOF' >> $GITHUB_ENV ;
-        grep -v '^#' .env >> $GITHUB_ENV ;
-        echo 'EOF' >> $GITHUB_ENV
+        if [[ -f ".env" ]] ; then {
+          echo 'BUILDARGS<<EOF' >> $GITHUB_ENV ;
+          grep -v '^#' .env >> $GITHUB_ENV ;
+          echo 'EOF' >> $GITHUB_ENV
+        } else {
+          echo "[NOTICE] No '.env' file to source buildargs from!"
+        } fi
 
     - name: 🏗 Set up QEMU
       if: ${{ steps.config.outputs.platforms != 'linux/amd64' }}
