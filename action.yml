@@ -35,9 +35,6 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: 🖨 Checkout code
-      uses: actions/checkout@v3
-
     - name: 🎲 Configure action
       id: config
       shell: bash
@@ -65,6 +62,19 @@ runs:
             echo "::set-output name=platforms::linux/amd64"
           } fi
         } fi
+
+        if ( git status -s ) ; then {
+          echo "[INFO] (checkout = 'false') Working copy exists, no need to checkout."
+          echo "::set-output name=checkout::false"
+        } else {
+          echo "[INFO] (checkout = 'true') No working copy seems to exist in '${{ github.workspace }}',"\
+            "need to checkout."
+          echo "::set-output name=checkout::true"
+        } fi
+
+    - name: 🖨 Checkout code
+      if: ${{ steps.config.outputs.checkout == 'true' }}
+      uses: actions/checkout@v3
 
     - name: 💉 Set up buildargs
       if: ${{ inputs.use-env-buildargs == 'true' }}
