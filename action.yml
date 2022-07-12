@@ -67,7 +67,8 @@ runs:
           echo "[INFO] (checkout = 'false') Working copy exists, no need to checkout."
           echo "::set-output name=checkout::false"
         } else {
-          echo "[INFO] (checkout = 'true') No working copy seems to exist in '${{ github.workspace }}', need to checkout."
+          echo "[INFO] (checkout = 'true') No working copy seems to exist in '${{ github.workspace }}',"\
+            "need to checkout."
           echo "::set-output name=checkout::true"
         } fi
 
