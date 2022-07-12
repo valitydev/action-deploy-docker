@@ -99,7 +99,7 @@ runs:
 
     - name: 🔓 Log in to the Container registry
       if: ${{ steps.config.outputs.push == 'true' }}
-      uses: docker/login-action@v1
+      uses: docker/login-action@v2
       with:
         registry: ${{ inputs.docker-registry }}
         username: ${{ inputs.registry-username }}
