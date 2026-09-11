@@ -1,0 +1,276 @@
+name: Build and publish Docker image
+
+# Reusable workflow: builds every requested platform in parallel on its own
+# runner (natively where a runner exists, under QEMU otherwise), pushes each
+# platform image by digest and stitches them into one manifest list.
+#
+# Usage:
+#   jobs:
+#     build-image:
+#       uses: valitydev/action-deploy-docker/.github/workflows/build-image.yml@v3
+#       with:
+#         registry-username: ${{ github.actor }}
+#       secrets:
+#         registry-access-token: ${{ secrets.GITHUB_TOKEN }}
+
+on:
+  workflow_call:
+    inputs:
+      registry-username:
+        description: "Username for image registry"
+        required: true
+        type: string
+      docker-registry:
+        description: "Docker registry"
+        required: false
+        default: "ghcr.io"
+        type: string
+      context-path:
+        description: "Build's context path"
+        required: false
+        default: "."
+        type: string
+      dockerfile-path:
+        description: "Path to the Dockerfile"
+        required: false
+        default: "./Dockerfile"
+        type: string
+      push:
+        # Default depends on event context, see _prepare_ job.
+        description: "Push build image to the specified image registry?"
+        required: false
+        default: ""
+        type: string
+      platforms:
+        # Default depends on event context, see _prepare_ job.
+        description: "Comma-separated list of target platforms for build"
+        required: false
+        default: ""
+        type: string
+      use-env-buildargs:
+        description: "Source docker build args from .env file?"
+        required: false
+        default: true
+        type: boolean
+      runners:
+        description: >
+          JSON object mapping a platform to the runner label that builds it natively.
+          Platforms missing from the map are built under QEMU on ubuntu-latest, so
+          '{"linux/amd64":"ubuntu-latest"}' forces arm64 through emulation where arm runners
+          are unavailable.
+        required: false
+        default: '{"linux/amd64":"ubuntu-latest","linux/arm64":"ubuntu-24.04-arm"}'
+        type: string
+    secrets:
+      registry-access-token:
+        description: "Access token for image registry"
+        required: true
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      push: ${{ steps.config.outputs.push }}
+      image: ${{ steps.config.outputs.image }}
+      matrix: ${{ steps.config.outputs.matrix }}
+      platform-count: ${{ steps.config.outputs.platform-count }}
+      artifact-prefix: ${{ steps.config.outputs.artifact-prefix }}
+    steps:
+      - name: 🎲 Configure build
+        id: config
+        env:
+          PUSH: ${{ inputs.push }}
+          PLATFORMS: ${{ inputs.platforms }}
+          RUNNERS: ${{ inputs.runners }}
+          IMAGE: ${{ inputs.docker-registry }}/${{ github.repository }}
+        run: |
+          if [[ -z "$PUSH" ]]; then
+            if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+              echo "[INFO] (push = 'true') This is a push event, assuming image needs publishing."
+              PUSH=true
+            else
+              echo "[INFO] (push = 'false') This is PR event, image probably needs just to be built."
+              PUSH=false
+            fi
+          elif [[ "$PUSH" != "true" && "$PUSH" != "false" ]]; then
+            echo "::error::Input 'push' must be 'true' or 'false', got '$PUSH'."
+            exit 1
+          fi
+          if [[ -z "$PLATFORMS" ]]; then
+            if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+              echo "[INFO] (platforms = 'linux/amd64,linux/arm64') This is a push event, assuming multiplatform image."
+              PLATFORMS=linux/amd64,linux/arm64
+            else
+              echo "[INFO] (platforms = 'linux/amd64') This is a PR event, just build an image under native platform."
+              PLATFORMS=linux/amd64
+            fi
+          fi
+          # Trim, drop empty entries and duplicates; unmapped platforms go to QEMU.
+          matrix=$(jq -nc --arg p "$PLATFORMS" --argjson r "$RUNNERS" '
+            [$p | split(",")[] | gsub("^\\s+|\\s+$"; "") | select(length > 0)] | unique
+            | map({platform: ., runner: ($r[.] // "ubuntu-latest"), emulate: ($r[.] == null)})')
+          count=$(jq -r 'length' <<< "$matrix")
+          if [[ "$count" -eq 0 ]]; then
+            echo "::error::Input 'platforms' resolved to an empty list."
+            exit 1
+          fi
+          # Keeps digest artifacts apart when a caller invokes this workflow more than once per run.
+          prefix="digests-$(sha256sum <<< "${IMAGE,,}" | cut -c1-12)"
+          echo "[INFO] image=${IMAGE,,} push=$PUSH matrix=$matrix"
+          echo "push=$PUSH" >> "$GITHUB_OUTPUT"
+          echo "image=${IMAGE,,}" >> "$GITHUB_OUTPUT"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "platform-count=$count" >> "$GITHUB_OUTPUT"
+          echo "artifact-prefix=$prefix" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: 🖨 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 💉 Set up buildargs
+        if: ${{ inputs.use-env-buildargs }}
+        # https://github.com/actions/toolkit/blob/dd04665/docs/commands.md#set-an-environment-variable
+        run: |
+          if [[ -f ".env" ]]; then
+            # Random delimiter so repository content cannot terminate the block early.
+            delim="BUILDARGS_$(openssl rand -hex 16)"
+            {
+              echo "BUILDARGS<<$delim"
+              sed '/^#/d' .env
+              echo "$delim"
+            } >> "$GITHUB_ENV"
+          else
+            echo "[NOTICE] No '.env' file to source buildargs from!"
+          fi
+
+      - name: 🏷 Name platform artifact
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: echo "PLATFORM_PAIR=${PLATFORM//\//-}" >> "$GITHUB_ENV"
+
+      - name: 🏗 Set up QEMU
+        if: ${{ matrix.emulate }}
+        uses: docker/setup-qemu-action@v3
+
+      - name: 🏗 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🔓 Log in to the Container registry
+        if: ${{ needs.prepare.outputs.push == 'true' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.docker-registry }}
+          username: ${{ inputs.registry-username }}
+          password: ${{ secrets.registry-access-token }}
+
+      # Same tag rules as `merge`: labels (e.g. org.opencontainers.image.version) are
+      # baked into the platform images here and must match the published tag.
+      - name: ℹ️ Extract metadata (labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.prepare.outputs.image }}
+          tags: |
+            type=sha,enable=${{ !startsWith(github.ref_name, 'epic') }}
+            type=raw,value=sha-{{ sha }}-{{ branch }},enable=${{ startsWith(github.ref_name, 'epic') }}
+
+      # Pushed by digest only; tags are attached to the manifest list in `merge`.
+      - name: 🚀 Build (and push by digest)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.context-path }}
+          file: ${{ inputs.dockerfile-path }}
+          platforms: ${{ matrix.platform }}
+          tags: ${{ needs.prepare.outputs.image }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            ${{ env.BUILDARGS }}
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=${{ needs.prepare.outputs.push }}
+
+      - name: 📦 Export digest
+        if: ${{ needs.prepare.outputs.push == 'true' }}
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Unexpected image digest '$DIGEST'."
+            exit 1
+          fi
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - name: 📦 Upload digest
+        if: ${{ needs.prepare.outputs.push == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.artifact-prefix }}-${{ env.PLATFORM_PAIR }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: [prepare, build]
+    if: ${{ needs.prepare.outputs.push == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📦 Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: ${{ needs.prepare.outputs.artifact-prefix }}-*
+          merge-multiple: true
+
+      - name: 🔍 Verify every platform produced a digest
+        working-directory: /tmp/digests
+        env:
+          EXPECTED: ${{ needs.prepare.outputs.platform-count }}
+        run: |
+          found=$(ls -1 | wc -l)
+          if [[ "$found" -ne "$EXPECTED" ]]; then
+            echo "::error::Expected $EXPECTED platform digests, found $found."
+            exit 1
+          fi
+
+      - name: 🏗 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 🔓 Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ inputs.docker-registry }}
+          username: ${{ inputs.registry-username }}
+          password: ${{ secrets.registry-access-token }}
+
+      - name: ℹ️ Extract metadata (tags) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ needs.prepare.outputs.image }}
+          tags: |
+            type=sha,enable=${{ !startsWith(github.ref_name, 'epic') }}
+            type=raw,value=sha-{{ sha }}-{{ branch }},enable=${{ startsWith(github.ref_name, 'epic') }}
+
+      - name: 🚀 Create manifest list and push
+        working-directory: /tmp/digests
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+        run: |
+          args=()
+          while IFS= read -r tag; do args+=(-t "$tag"); done < <(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          for digest in *; do args+=("${IMAGE}@sha256:${digest}"); done
+          docker buildx imagetools create "${args[@]}"
+
+      - name: 🔍 Inspect image
+        env:
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: docker buildx imagetools inspect "${IMAGE}:${VERSION}"
